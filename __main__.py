@@ -1,6 +1,5 @@
 import argparse
-from preprocess import preprocess_data
-from prototype1.model1 import VisualAudioModel
+from __preprocess__ import preprocess_data
 
 # Fergus Steel (2542391s) MSCi Project, this is a basic main function that will be used to run the model
 
@@ -18,7 +17,8 @@ def main():
     train_loader, val_loader = preprocess_data(args.dataset, args.batch_size)
 
     # Initialize the model
-    model = VisualAudioModel()
+    # model = VisualAudioModel()
+    model = None
 
     if args.train:
         print(train_loader)

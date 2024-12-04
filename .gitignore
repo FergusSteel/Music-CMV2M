@@ -1,2 +1,7 @@
 /dataset
 /CMV2M
+/model/Solos
+
+/Solos/data
+
+*__pycache__*
