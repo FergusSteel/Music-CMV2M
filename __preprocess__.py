@@ -1,127 +1,191 @@
 import os
-import torch
-from torch.utils.data import Dataset
-from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor
-import librosa
 import cv2
+import librosa
+import soundfile as sf
+import subprocess
+import re
 
-class CrossModalDataset(Dataset):
-    def __init__(self, video_dir, audio_dir, target_video_size=(224, 224), target_fps=25, target_audio_rate=44100, duration=None):
-        """
-        A Dataset class for loading and preprocessing video and audio pairs.
+def preprocess_instrument_folders(data_dir, output_video_dir, output_audio_dir, segment_duration=10):
+    """
+    Preprocess all instrument folders, standardizing and segmenting videos and audio.
 
-        Args:
-            video_dir (str): Directory containing video files.
-            audio_dir (str): Directory containing audio files.
-            target_video_size (tuple): Target size for video frames (H, W).
-            target_fps (int): Target frames per second for videos.
-            target_audio_rate (int): Target sampling rate for audio.
-            duration (float): Max duration (in seconds) for video/audio.
-        """
-        self.video_dir = video_dir
-        self.audio_dir = audio_dir
-        self.target_video_size = target_video_size
-        self.target_fps = target_fps
-        self.target_audio_rate = target_audio_rate
-        self.duration = duration
+    Args:
+        data_dir (str): Path to the directory containing instrument folders.
+        output_video_dir (str): Directory to save processed video segments.
+        output_audio_dir (str): Directory to save processed audio segments.
+        segment_duration (int): Duration of each segment in seconds (default: 10 seconds).
+    """
+    os.makedirs(output_video_dir, exist_ok=True)
+    os.makedirs(output_audio_dir, exist_ok=True)
 
-        # List all video and audio files
-        self.video_files = sorted([f for f in os.listdir(video_dir) if f.endswith(".mp4")])
-        self.audio_files = sorted([f for f in os.listdir(audio_dir) if f.endswith(".mp3")])
+    for instrument in os.listdir(data_dir):
+        instrument_path = os.path.join(data_dir, instrument)
+        if os.path.isdir(instrument_path):
+            print(f"Processing instrument: {instrument}")
+            instrument_video_dir = os.path.join(output_video_dir, instrument)
+            instrument_audio_dir = os.path.join(output_audio_dir, instrument)
+            os.makedirs(instrument_video_dir, exist_ok=True)
+            os.makedirs(instrument_audio_dir, exist_ok=True)
 
-        # Check if video and audio are aligned
-        self._validate_data()
+            preprocess_folder(instrument_path, instrument_video_dir, instrument_audio_dir, segment_duration)
 
-        # Video transformation pipeline
-        self.video_transforms = Compose([
-            Resize(target_video_size),
-            CenterCrop(target_video_size),
-            ToTensor()
-        ])
+def preprocess_folder(input_dir, output_video_dir, output_audio_dir, segment_duration):
+    """
+    Preprocess videos and audio in a single instrument folder.
 
-    def __len__(self):
-        return len(self.video_files)
+    Args:
+        input_dir (str): Directory containing video and audio files.
+        output_video_dir (str): Directory to save processed video segments.
+        output_audio_dir (str): Directory to save processed audio segments.
+        segment_duration (int): Duration of each segment in seconds.
+    """
+    # Group video files by base name (ignoring .fXXX)
+    video_files = [f for f in os.listdir(input_dir) if f.endswith((".mp4", ".mkv", ".webm"))]
+    audio_files = [f for f in os.listdir(input_dir) if f.endswith(".mp3")]
 
-    def __getitem__(self, idx):
-        video_path = os.path.join(self.video_dir, self.video_files[idx])
-        audio_path = os.path.join(self.audio_dir, self.audio_files[idx])
+    # Create a mapping of base names to video files
+    video_map = {}
+    for video_file in video_files:
+        base_name = re.sub(r"\.f\d+", "", os.path.splitext(video_file)[0])  # Strip .fXXX
+        if base_name not in video_map:
+            video_map[base_name] = []
+        video_map[base_name].append(video_file)
 
-        # Load video and audio
-        video_frames = self._load_video(video_path)
-        audio_data, audio_rate = self._load_audio(audio_path)
+    for base_name, files in video_map.items():
+        # Select the best quality video
+        selected_video = select_best_quality(files)
+        video_path = os.path.join(input_dir, selected_video)
 
-        # Ensure duration alignment
-        video_frames, audio_data = self._align_duration(video_frames, audio_data, audio_rate)
+        # Find corresponding audio
+        audio_file = f"{base_name}.mp3"
+        audio_path = os.path.join(input_dir, audio_file)
 
-        return {
-            "video": video_frames,  # Shape: [num_frames, 3, H, W]
-            "audio": audio_data,    # Shape: [num_samples]
-            "video_file": self.video_files[idx],
-            "audio_file": self.audio_files[idx]
-        }
+        if not os.path.exists(audio_path):
+            print(f"Skipping {selected_video}: No corresponding audio file found.")
+            continue
 
-    def _validate_data(self):
-        """Ensure each video has a corresponding audio file."""
-        video_basenames = [os.path.splitext(f)[0] for f in self.video_files]
-        audio_basenames = [os.path.splitext(f)[0] for f in self.audio_files]
-        if video_basenames != audio_basenames:
-            raise ValueError("Video and audio files are not aligned!")
-
-    def _load_video(self, video_path):
-        """Load and preprocess video frames."""
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-
-        frames = []
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            # Convert to RGB and apply transformations
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = self.video_transforms(frame)
-            frames.append(frame)
-        cap.release()
-
-        # Sample frames to target FPS
-        sampled_frames = self._sample_frames(frames, fps)
-        return torch.stack(sampled_frames)
-
-    def _sample_frames(self, frames, fps):
-        """Sample frames to match target FPS."""
-        interval = int(fps / self.target_fps)
-        return frames[::interval]
-
-    def _load_audio(self, audio_path):
-        """Load and preprocess audio data."""
-        audio, rate = librosa.load(audio_path, sr=None)
-        if rate != self.target_audio_rate:
-            audio = librosa.resample(audio, orig_sr=rate, target_sr=self.target_audio_rate)
-        return audio, self.target_audio_rate
-
-    def _align_duration(self, video_frames, audio_data, audio_rate):
-        """Ensure video and audio have the same duration."""
-        video_duration = len(video_frames) / self.target_fps
-        audio_duration = len(audio_data) / audio_rate
-
-        if self.duration:
-            max_duration = self.duration
+        # Standardize video format to .mp4
+        standardized_video_path = os.path.join(input_dir, f"{os.path.splitext(selected_video)[0]}.mp4")
+        if not selected_video.endswith(".mp4"):
+            convert_video_to_mp4(video_path, standardized_video_path)
         else:
-            max_duration = min(video_duration, audio_duration)
+            standardized_video_path = video_path
 
-        # Trim/pad video
-        num_frames = int(max_duration * self.target_fps)
-        if len(video_frames) > num_frames:
-            video_frames = video_frames[:num_frames]
-        elif len(video_frames) < num_frames:
-            padding = torch.zeros((num_frames - len(video_frames), *video_frames.shape[1:]))
-            video_frames = torch.cat([video_frames, padding])
+        # Process video and audio into 10-second segments
+        process_video(standardized_video_path, output_video_dir, segment_duration)
+        process_audio(audio_path, output_audio_dir, segment_duration)
 
-        # Trim/pad audio
-        num_samples = int(max_duration * audio_rate)
-        if len(audio_data) > num_samples:
-            audio_data = audio_data[:num_samples]
-        elif len(audio_data) < num_samples:
-            audio_data = librosa.util.fix_length(audio_data, size=num_samples)
+def select_best_quality(files):
+    """
+    Select the best-quality video file from a list of candidates.
 
-        return video_frames, audio_data
+    Args:
+        files (list): List of video filenames.
+
+    Returns:
+        str: The filename of the best-quality video.
+    """
+    def get_quality_score(filename):
+        match = re.search(r"f(\d+)", filename)  # Look for fXXX pattern
+        return int(match.group(1)) if match else 0  # Default to 0 if no match
+
+    # Prioritize MP4 files, then sort by quality score
+    mp4_files = [f for f in files if f.endswith(".mp4")]
+    other_files = [f for f in files if not f.endswith(".mp4")]
+
+    if mp4_files:
+        return sorted(mp4_files, key=get_quality_score, reverse=True)[0]
+    return sorted(other_files, key=get_quality_score, reverse=True)[0]
+
+def convert_video_to_mp4(input_path, output_path):
+    """
+    Convert a video to .mp4 format using ffmpeg.
+
+    Args:
+        input_path (str): Path to the input video.
+        output_path (str): Path to save the converted video.
+    """
+    subprocess.run([
+        "ffmpeg", "-i", input_path, "-vcodec", "libx264", "-crf", "23", "-preset", "medium", output_path
+    ], check=True)
+
+def process_video(video_path, output_dir, segment_duration):
+    """
+    Splits a video into 10-second segments, excluding the first 10 seconds.
+
+    Args:
+        video_path (str): Path to the input video.
+        output_dir (str): Directory to save video segments.
+        segment_duration (int): Duration of each segment in seconds.
+    """
+    cap = cv2.VideoCapture(video_path)
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps
+
+    num_segments = int((duration - 10) // segment_duration)  # Number of 10-second segments
+    start_frame = int(fps * 10)  # Skip the first 10 seconds
+
+    for i in range(num_segments):
+        segment_start = start_frame + i * segment_duration * fps
+        segment_end = segment_start + segment_duration * fps
+        segment_path = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(video_path))[0]}_segment_{i + 1}.mp4")
+        save_video_segment(cap, segment_start, segment_end, fps, segment_path)
+
+    cap.release()
+
+def save_video_segment(cap, start_frame, end_frame, fps, output_path):
+    """
+    Saves a segment of a video to a file, resizing frames to 224x224.
+
+    Args:
+        cap (cv2.VideoCapture): OpenCV video capture object.
+        start_frame (int): Starting frame of the segment.
+        end_frame (int): Ending frame of the segment.
+        fps (int): Frames per second of the video.
+        output_path (str): Path to save the video segment.
+    """
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    width, height = 224, 224  # Target resolution
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+    for _ in range(int(end_frame - start_frame)):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        # Resize frame to 224x224
+        resized_frame = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_AREA)
+        out.write(resized_frame)
+
+    out.release()
+
+def process_audio(audio_path, output_dir, segment_duration):
+    """
+    Splits an audio file into 10-second segments, excluding the first 10 seconds.
+
+    Args:
+        audio_path (str): Path to the input audio.
+        output_dir (str): Directory to save audio segments.
+        segment_duration (int): Duration of each segment in seconds.
+    """
+    audio, sr = librosa.load(audio_path, sr=None)
+    total_samples = len(audio)
+    duration = total_samples / sr
+
+    num_segments = int((duration - 10) // segment_duration)  # Number of 10-second segments
+    start_sample = int(sr * 10)  # Skip the first 10 seconds
+
+    for i in range(num_segments):
+        segment_start = start_sample + i * segment_duration * sr
+        segment_end = segment_start + segment_duration * sr
+        segment_path = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(audio_path))[0]}_segment_{i + 1}.mp3")
+        sf.write(segment_path, audio[int(segment_start):int(segment_end)], sr)
+
+if __name__ == "__main__":
+    data_dir = "solos/data"
+    output_video_dir = "solos/processed_videos"
+    output_audio_dir = "solos/processed_audios"
+
+    preprocess_instrument_folders(data_dir, output_video_dir, output_audio_dir)
