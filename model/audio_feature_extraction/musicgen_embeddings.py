@@ -4,8 +4,11 @@ import torchaudio
 from transformers import AutoTokenizer, AutoModel, EncodecModel
 from transformers import MusicgenForConditionalGeneration, AutoProcessor
 import torch.optim as optim
+import torchaudio.transforms as T
 import os
 import glob
+import numpy as np
+import matplotlib.pyplot as plt
 
 os.environ["HF_HOME"] = "E:/HuggingFace/huggingface_cache"
 
@@ -44,95 +47,146 @@ class AudioFeatureExtraction:
         return waveform.squeeze(0)
     
 
-# FEASABILITY STUDY - Decoder
-# class UNetAudioDecoder(nn.Module):
-#     def __init__(self, embedding_dim, output_length):
-#         super(UNetAudioDecoder, self).__init__()
-#         self.embedding_dim = embedding_dim
-#         self.output_length = output_length
+class AudioSpectogramEncoder:
+    def __init__(self, sample_rate=32000, n_fft=2048, hop_length=203, n_mels=128, device="cuda" if torch.cuda.is_available() else "cpu"):
+        self.mel_spectrogram = T.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            n_mels=n_mels
+        )
 
-#         self.encoder = nn.Sequential(
-#             nn.Conv1d(embedding_dim, 256, kernel_size=4, stride=2, padding=1),  # Down-sample
-#             nn.ReLU(),
-#             nn.Conv1d(256, 512, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(),
-#             nn.Conv1d(512, 1024, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(),
-#         )
-#         self.bottleneck = nn.Sequential(
-#             nn.Conv1d(1024, 1024, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(),
-#         )
+    def waveform_to_mel(self, waveform):
+        # Convert waveform to Mel-spectrogram
+        print("waveform", waveform.shape)
+        mel_spec = self.mel_spectrogram(waveform)  # Shape: [n_mels, time_frames]
+        return mel_spec
+    
+    def _preprocess_audio(self, audio_path):
+        waveform, sample_rate = torchaudio.load(audio_path)
+        print(sample_rate)
+        print(waveform.shape)
+        if sample_rate != self.processor.sampling_rate:
+            waveform = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=self.processor.sampling_rate)(waveform)
+        print(waveform.shape)
+        return waveform.squeeze(0)
+    
+class UniformChunkSpectrogram:
+    def __init__(self, num_chunks=1568, n_fft=2048, n_mels=128, sample_rate=32000):
+        self.num_chunks = num_chunks
+        self.n_fft = n_fft
+        self.n_mels = n_mels
+        self.sample_rate = sample_rate
+        self.mel_filter = T.MelScale(n_mels=n_mels, sample_rate=sample_rate)
 
-#         self.decoder = nn.Sequential(
-#             nn.ConvTranspose1d(1024, 512, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(),
-#             nn.ConvTranspose1d(512, 256, kernel_size=4, stride=2, padding=1),
-#             nn.ReLU(),
-#             nn.ConvTranspose1d(256, 1, kernel_size=4, stride=2, padding=1),  # Reconstruct single-channel audio
-#         )
+    def chunk_and_transform(self, waveform):
+        total_samples = waveform.size(-1)
+        chunk_size = total_samples // self.num_chunks
 
-#     def forward(self, embeddings):
-#         x = embeddings.transpose(1, 2)  # Shape: [batch_size, embedding_dim, seq_len]
-        
-#         enc_out = self.encoder(x)
+        spectrogram = []
 
-#         bottleneck_out = self.bottleneck(enc_out)
+        for i in range(self.num_chunks):
+            start = i * chunk_size
+            end = start + chunk_size
+            chunk = waveform[..., start:end]
 
-#         reconstructed_audio = self.decoder(bottleneck_out)
-#         reconstructed_audio = reconstructed_audio.view(reconstructed_audio.size(0), -1)  # [batch_size, output_length]
-#         return reconstructed_audio
+            # Ensure the chunk has enough length for n_fft
+            if chunk.size(-1) < self.n_fft:
+                chunk = torch.nn.functional.pad(chunk, (0, self.n_fft - chunk.size(-1)))
 
+            # Apply STFT
+            chunk_fft = torch.stft(chunk, n_fft=self.n_fft, return_complex=True)
+            chunk_power = torch.abs(chunk_fft).pow(2)
 
+            # Convert to Mel-scale
+            mel_spec = self.mel_filter(chunk_power)
+            
+            # Aggregate across frequency dimensions
+            mel_spec = mel_spec.mean(dim=-1)  # Average over frequencies
+            
+            spectrogram.append(mel_spec)
 
-# # Initialize feature extractor and decoder
-# if __name__ == "__main__":
-#     feature_extractor = AudioFeatureExtraction()
-#     decoder = UNetAudioDecoder(embedding_dim=1024, output_length=320000).to("cuda")  # Adjust output_length for your audio duration
+        # Stack spectrogram chunks into [num_chunks, n_mels]
+        return torch.stack(spectrogram, dim=0)
+    
+class FixedSizeMelSpectrogram:
+    def __init__(self, sample_rate=32000, n_fft=2048, hop_length=203, n_mels=128):
+        self.sample_rate = sample_rate
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.n_mels = n_mels
+        self.mel_spectrogram = T.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            n_mels=n_mels,
+            power=2.0
+        )
 
-#     # Loss function and optimizer
-#     criterion = nn.MSELoss()
-#     optimizer = optim.Adam(decoder.parameters(), lr=1e-3)
+    def waveform_to_mel(self, waveform):
+        # Ensure waveform has the correct shape
+        waveform = waveform.squeeze(0)  # Remove batch dimension
 
-#     # Training loop
-#     def train_unet(audio_files, decoder, feature_extractor, epochs=1, save_path="weights.pth"):
-#         criterion = nn.MSELoss()
-#         optimizer = optim.Adam(decoder.parameters(), lr=1e-3)
+        # Compute Mel-spectrogram
+        mel_spec = self.mel_spectrogram(waveform)  # Shape: [n_mels, time_frames]
 
-#         for epoch in range(epochs):
-#             for audio_path in audio_files:
-#                 # Extract features
-#                 embeddings = feature_extractor.extract_features(audio_path).mean(dim=1).to("cuda")  # Average over sequence
-                
-#                 # Load original audio
-#                 waveform, sample_rate = torchaudio.load(audio_path)
-#                 waveform = waveform.to("cuda")
-                
-#                 waveform = waveform[:, :320000]
-#                 if waveform.size(1) < 320000:
-#                     waveform = torch.cat([waveform, torch.zeros(1, 320000 - waveform.size(1)).to("cuda")], dim=1)
+        # Check temporal dimensions and trim/pad if necessary
+        num_frames = mel_spec.size(-1)
+        if num_frames < 1568:
+            # Pad if fewer frames
+            mel_spec = F.pad(mel_spec, (0, 1568 - num_frames))
+        elif num_frames > 1568:
+            # Trim if more frames
+            mel_spec = mel_spec[..., :1568]
 
-#                 # Forward pass
-#                 optimizer.zero_grad()
-#                 reconstructed_audio = decoder(embeddings)
-
-#                 # Compute loss
-#                 loss = criterion(reconstructed_audio, waveform)
-#                 loss.backward()
-#                 optimizer.step()
-
-#             print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
-
-#         # Save trained weights
-#         torch.save(decoder.state_dict(), save_path)
-#         print(f"Model weights saved to {save_path}")
+        return mel_spec
 
 def collect_audio_files(directory="../../Solos/processed_audios/Cello", extension="mp3"):
     return glob.glob(f"{directory}/*.{extension}")
 
-audio_dir = "../../Solos/processed_audios/Cello"
+audio_dir = "../../Solos/processed_audios/Violin"
 audio_files = collect_audio_files(audio_dir, extension="mp3")
 
 model = AudioFeatureExtraction()
 
+specto = AudioSpectogramEncoder()
+
+# specto2 = UniformChunkSpectrogram()
+
+# specogram2 = specto2.chunk_and_transform(model._preprocess_audio(audio_files[0]))
+# print("specogram2", specogram2.shape)
+
+spectrogram_extractor = FixedSizeMelSpectrogram()
+
+def visualize_mel_spectrogram(mel_spec, sample_rate=32000, hop_length=203, n_mels=128):
+    # Convert to numpy array for visualization
+    mel_spec = mel_spec.cpu().detach().numpy() if isinstance(mel_spec, torch.Tensor) else mel_spec
+
+    # Generate time and frequency axes
+    time_axis = np.linspace(0, mel_spec.shape[1] * hop_length / sample_rate, mel_spec.shape[1])
+    freq_axis = np.linspace(0, sample_rate / 2, n_mels)
+
+    # Plot the spectrogram
+    plt.figure(figsize=(12, 6))
+    plt.imshow(mel_spec, aspect='auto', origin='lower', cmap='viridis', 
+                extent=[time_axis[0], time_axis[-1], freq_axis[0], freq_axis[-1]])
+    plt.colorbar(label="Magnitude (dB)")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Frequency (Hz)")
+    plt.title("Mel-Spectrogram")
+    plt.show()
+try:
+    for f in audio_files:
+        print(f)
+        mel_spec = spectrogram_extractor.waveform_to_mel(model._preprocess_audio(f))
+        print(f"Mel-Spectrogram Shape: {mel_spec.shape}")
+        visualize_mel_spectrogram(mel_spec)
+except Exception as e:
+    print(f"Error: {e}")
+
+
+specogram = specto.waveform_to_mel(model._preprocess_audio(audio_files[5]))
+print("spectogram", specogram.shape)
 extracted = model.extract_features(audio_files[0])
+
+
