@@ -24,22 +24,16 @@ class ViViTFeatureExtractor:
         video_embeddings = self._extract_vivit_embeddings(frames)
         optical_flow = self._compute_optical_flow(frames)
 
-        combined_features = []#self._combine_features(video_embeddings, optical_flow)
+        combined_features = []
 
         return {
             "video_embeddings": video_embeddings,
-            "optical_flow": optical_flow,
-            "combined_features": combined_features
+            "optical_flow": optical_flow
         }
 
     def _load_video_frames(self, video_path):
-        # container = av.open(video_path)
-        # frames = []
-        # for i, frame in enumerate(container.decode(video=0)):
-        #     frames.append(frame)
-        # return np.transpose(np.stack([x.to_ndarray(format="rgb24") for x in frames]), (0,3,1,2)) # Shape: [num_frames, C, H, W]
         video, _, _ = read_video(video_path, pts_unit="sec")
-        video_frames = video.permute(0, 3, 1, 2)  # Convert to (T, C, H, W)
+        video_frames = video.permute(0, 3, 1, 2)  # [T, C, H, W]
         indices = torch.linspace(0, video_frames.shape[0] - 1, 16).long()
         video_frames = video_frames[indices]
         return video_frames
@@ -51,26 +45,22 @@ class ViViTFeatureExtractor:
         return outputs
 
     def _compute_optical_flow(self, frames):
-        video_frames = frames.permute(0, 2, 3, 1).cpu().numpy()  # Convert to (T, H, W, C)
+        video_frames = frames.permute(0, 2, 3, 1).cpu().numpy()  # [T, H, W, C ] - rehaspeeeeee
         flows = []
 
         for i in range(video_frames.shape[0] - 1):
-            # Convert frames to grayscale
             prev_frame = cv2.cvtColor(video_frames[i], cv2.COLOR_RGB2GRAY)
             next_frame = cv2.cvtColor(video_frames[i + 1], cv2.COLOR_RGB2GRAY)
-
-            # Compute dense optical flow using Farneback
             flow = cv2.calcOpticalFlowFarneback(prev_frame, next_frame, None,
                                                 pyr_scale=0.5, levels=3, winsize=15,
                                                 iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
             flows.append(flow)
 
-        # Convert flows to torch.Tensor
         return torch.tensor(flows)
 
     def _combine_features(self, video_embeddings, optical_flow):
-        flow_features = torch.tensor(optical_flow).mean(dim=(-1, -2))  # Temporal average pooling
-        flow_features = flow_features.unsqueeze(-1).repeat(1, video_embeddings.shape[-1])  # Match dimensions
+        flow_features = torch.tensor(optical_flow).mean(dim=(-1, -2)) 
+        flow_features = flow_features.unsqueeze(-1).repeat(1, video_embeddings.shape[-1]) 
         combined = video_embeddings[:-1] + flow_features.to(video_embeddings.device)
         return combined
 
