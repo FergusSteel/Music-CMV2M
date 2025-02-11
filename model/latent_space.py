@@ -18,24 +18,56 @@ class TemporalAlignmentModule(nn.Module):
             value=audio_features
         )
         return aligned_features, attention_weights
+    
+class TemporalCrossAlignmentModule(nn.Module):
+    def __init__(self, feature_dim=768, num_heads=8):
+        super().__init__()
+        self.video_to_audio_attention = nn.MultiheadAttention(
+            embed_dim=feature_dim, num_heads=num_heads, batch_first=True
+        )
+        self.audio_to_video_attention = nn.MultiheadAttention(
+            embed_dim=feature_dim, num_heads=num_heads, batch_first=True
+        )
+        self.gate = nn.Linear(2 * feature_dim, feature_dim)
+
+    def forward(self, video_features, audio_features):
+        video_aligned, video_attention = self.video_to_audio_attention(
+            query=video_features, key=audio_features, value=audio_features
+        )
+        
+        audio_aligned, audio_attention = self.audio_to_video_attention(
+            query=audio_features, key=video_features, value=video_features
+        )
+
+        # add em together using a gate so we can decide how much of each to use rather than just concat
+        fused_video = torch.tanh(self.gate(torch.cat([video_features, video_aligned], dim=-1)))
+        fused_audio = torch.tanh(self.gate(torch.cat([audio_features, audio_aligned], dim=-1)))
+
+        return fused_video, fused_audio, video_attention, audio_attention
 
 class SharedLatentSpace(nn.Module):
     def __init__(self, feature_dim=768, latent_dim=768):
         super().__init__()
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         
-        self.temporal_alignment = nn.MultiheadAttention(
-            embed_dim=latent_dim,
-            num_heads=8,
-            batch_first=True
-        ).to(self.device)
+        self.temporal_alignment = TemporalCrossAlignmentModule().to(self.device)
 
-        # Project the videomae features to latent space man
+        # Project the videomae features to latent space man WE NEED TO ADD IN THE OPTICAL FLOW
         self.video_encoder = nn.Sequential(
             nn.LayerNorm(feature_dim),
             nn.Linear(feature_dim, latent_dim),
             nn.GELU(),
             nn.Linear(latent_dim, latent_dim)
+        )
+
+        self.optical_flow_encoder = nn.Sequential(
+            nn.Conv2d(2, 64, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.GELU(),
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(128, feature_dim)
         )
         
         #Projectin audio to latent space 
@@ -60,8 +92,23 @@ class SharedLatentSpace(nn.Module):
         
         self.to(self.device)
     
-    def encode_video(self, video_features):
-        return self.video_encoder(video_features)
+    def encode_video(self, video_features, optical_flow):
+        flow_features = []
+        for flow in optical_flow:
+            feat = self.optical_flow_encoder(flow)
+            flow_features.append(feat)
+        flow_features = torch.stack(flow_features, dim=1)
+
+        flow_features = F.interpolate(
+            flow_features.transpose(1, 2),
+            size=video_features.size(1),    # Match 1568 timesteps
+            mode='linear'
+        ).transpose(1, 2)
+        
+        video_latent = self.video_encoder(video_features)
+        combined_features = video_latent + flow_features
+        
+        return combined_features
     
     def encode_audio(self, audio_features, encodec_features):
         # Encode aligned features
@@ -76,48 +123,53 @@ class SharedLatentSpace(nn.Module):
         return audio_latent
     
     def align_modalities(self, video_latent, audio_latent):
-        aligned_features, attention_map = self.temporal_alignment(
-            query=video_latent,
-            key=audio_latent,  
-            value=audio_latent
-        )
+        fused_video, fused_audio, video_attention, audio_attention = self.temporal_alignment(video_latent, audio_latent)
     
         
-        return aligned_features, audio_latent, attention_map
+        return fused_video, fused_audio, video_attention, audio_attention
         
     def forward(self, features):
-        # Encode both modalities
-        video_latent = self.encode_video(features["video_features"])
+        # Encode both modalities onto latent space and align em
+        video_latent = self.encode_video(
+            features["video_features"],
+            features["optical_flow"])
+        
         audio_latent = self.encode_audio(
             features["audio_features"],
             features["encodec_features"]
         )
-        video_embed, audio_embed, attention = self.align_modalities(video_latent, audio_latent)
+
+        fused_video, fused_audio, video_attention, audio_attention = self.align_modalities(video_latent, audio_latent)
         
         return {
-            "video_embedding": video_embed,     
-            "audio_embedding": audio_embed,      
-            "attention_map": attention,          
+            "video_embedding": fused_video,     
+            "audio_embedding": fused_audio,      
+            "video_attention_map": video_attention,
+            "audio_attention_map": audio_attention,          
             "video_latent": video_latent,       
             "audio_latent": audio_latent       
         }
     
     def compute_total_loss(self, outputs):
-        video_normalised = F.normalize(outputs["video_latent"])
-        audio_normalised = F.normalize(outputs["audio_latent"])
+        video_normalised = F.normalize(outputs["video_embedding"])
+        audio_normalised = F.normalize(outputs["audio_embedding"])
 
         sim = torch.matmul(video_normalised.squeeze(), audio_normalised.squeeze().T) / self.temperature
         labels = torch.arange(sim.size(0), device=self.device)
         contrastive_loss = F.cross_entropy(sim, labels)
         
-        attention = outputs["attention_map"]
-        temporal_loss = -torch.mean(torch.sum(attention * torch.eye(attention.size(1), device=self.device), dim=1)) # basically we take the diagonal elements of the attention map and if theyre big its bad cos that suggest that they are not temporally aligned
-        
+        video_attention = outputs["video_attention_map"]
+        audio_attention = outputs["audio_attention_map"]
+
+        # IDK how to compute this - basically we want to measure "how much" the modalities' features attend to another (well aligned reprs will attend more (non-diagonal non-normal))
+        # temporal_loss = 
+        temporal_loss = 0
+
+
         return {
             "loss": contrastive_loss + temporal_loss,
             "contrastive_loss": contrastive_loss,
-            "temporal_loss": temporal_loss,
-            "attention": attention
+            "temporal_loss": temporal_loss
         }
 
 def train_step(model, features, optimizer):
@@ -148,7 +200,7 @@ if __name__ == "__main__":
     video_path = os.path.join(video_directory, "-qRn8UyHogA.f136_segment_1.mp4")
     
     features = extractor.extract_features(video_path, audio_path)
-    s
+    
     for k, v in features.items():
         if isinstance(v, torch.Tensor):
             features[k] = v.to(model.device)

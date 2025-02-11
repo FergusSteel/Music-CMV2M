@@ -1,5 +1,7 @@
 import torch
+import torchvision
 import torchvision.transforms as transforms
+from torchvision.models import optical_flow
 from torchvision.io import read_video
 import cv2
 import av
@@ -17,57 +19,50 @@ class ViViTFeatureExtractor:
             self.model = VideoMAEModel.from_pretrained("MCG-NJU/videomae-base")
             print(self.model.config.num_frames)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.flow_model = optical_flow.raft_large().to(self.device)
+        self.flow_model.eval()
 
     def extract_features(self, video_path):
-        frames = self._load_video_frames(video_path)
+        frames = self.load_frames(video_path)
         print("Frame Shape: ", frames.shape)
-        video_embeddings = self._extract_vivit_embeddings(frames)
-        optical_flow = self._compute_optical_flow(frames)
-
-        combined_features = []
+        video_embeddings = self.extract_embeddings(frames)
+        optical_flow = self.compute_optical_flow(frames)
 
         return {
             "video_embeddings": video_embeddings,
             "optical_flow": optical_flow
         }
 
-    def _load_video_frames(self, video_path):
+    def load_frames(self, video_path):
         video, _, _ = read_video(video_path, pts_unit="sec")
         video_frames = video.permute(0, 3, 1, 2)  # [T, C, H, W]
         indices = torch.linspace(0, video_frames.shape[0] - 1, 16).long()
         video_frames = video_frames[indices]
         return video_frames
 
-    def _extract_vivit_embeddings(self, frames):
+    def extract_embeddings(self, frames):
         with torch.no_grad():
             inputs = self.image_processor(list(frames), return_tensors="pt")
             outputs = self.model(**inputs).last_hidden_state
         return outputs
 
-    def _compute_optical_flow(self, frames):
-        video_frames = frames.permute(0, 2, 3, 1).cpu().numpy()  # [T, H, W, C ] - rehaspeeeeee
+    def compute_optical_flow(self, frames):
         flows = []
+        frames = frames.to(self.device)
+        
+        with torch.no_grad():
+            for i in range(frames.shape[0] - 1):
+                frame1 = frames[i:i+1] * 255.0
+                frame2 = frames[i+1:i+2] * 255.0
+                flow_predictions = self.flow_model(frame1, frame2)
+                final_flow = flow_predictions[-1] # discard the other predictions only use the last one from da raft model
+                flows.append(final_flow)
 
-        for i in range(video_frames.shape[0] - 1):
-            prev_frame = cv2.cvtColor(video_frames[i], cv2.COLOR_RGB2GRAY)
-            next_frame = cv2.cvtColor(video_frames[i + 1], cv2.COLOR_RGB2GRAY)
-            flow = cv2.calcOpticalFlowFarneback(prev_frame, next_frame, None,
-                                                pyr_scale=0.5, levels=3, winsize=15,
-                                                iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
-            flows.append(flow)
-
-        return torch.tensor(flows)
-
-    def _combine_features(self, video_embeddings, optical_flow):
-        flow_features = torch.tensor(optical_flow).mean(dim=(-1, -2)) 
-        flow_features = flow_features.unsqueeze(-1).repeat(1, video_embeddings.shape[-1]) 
-        combined = video_embeddings[:-1] + flow_features.to(video_embeddings.device)
-        return combined
+        return torch.stack(flows)
 
 if __name__ == "__main__":
-    video_path = "../../Solos/processed_videos/Cello/-qRn8UyHogA.f136_segment_1.mp4"
+    video_path = "../Solos/processed_videos/Cello/-qRn8UyHogA.f136_segment_1.mp4"
     extractor = ViViTFeatureExtractor()
     features = extractor.extract_features(video_path)
     print("Video Embeddings Shape:", features["video_embeddings"].size())
     print("Optical Flow Shape:", features["optical_flow"].size())
-    print("Combined Features Shape:", features["combined_features"])

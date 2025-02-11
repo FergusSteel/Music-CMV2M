@@ -47,11 +47,11 @@ def play_audio(waveform, sample_rate=32000):
 
 if __name__ == "__main__":
     encoder = TemporalAudioEncoder(target_length=1568)
-    audio_path = "../../Solos/processed_audios/Violin/0dKj8oP3QxE_segment_1.mp3"
+    audio_path = "../Solos/processed_audios/Violin/1ytu0LGRScg_segment_20.mp3"
     
     features, reconstructed = demo_audio_encoder(audio_path, encoder)
     
-    visualize_features(features)
+    # visualize_features(features)
     
     original = encoder._preprocess_audio(audio_path)
     reconstructed = reconstructed.cpu()
@@ -62,16 +62,31 @@ if __name__ == "__main__":
     
     print("Reconstructed:")
     play_audio(reconstructed)
+
+    play_audio(original - reconstructed)
     
     min_length = min(original.size(-1), reconstructed.size(-1))
     original = original[:min_length]
     reconstructed = reconstructed[:min_length]
     
-    mse = F.mse_loss(original, reconstructed)
     print(f"\nReconstruction Quality Metrics:")
-    print(f"MSE: {mse.item():.6f}")
+    noise = original - reconstructed
+    snr = 20 * torch.log10(torch.norm(original) / torch.norm(noise))
     
-    print("\nFeature shapes:")
-    print(f"Mel features: {features['mel_features'].shape}")
-    print(f"Aligned features: {features['aligned_features'].shape}")
-    print(f"Encodec features: {features['encodec_features'].shape}")
+    # mse
+    mse = F.mse_loss(original, reconstructed)
+    
+    # psnr
+    max_val = max(original.abs().max(), reconstructed.abs().max())
+    psnr = 20 * torch.log10(max_val / torch.sqrt(mse))
+    
+    orig_norm = (original - original.mean()) / original.std()
+    recon_norm = (reconstructed - reconstructed.mean()) / reconstructed.std()
+    correlation = torch.mean(orig_norm * recon_norm)
+    
+    print(f"Signal-to-Noise Ratio: {snr:.2f} dB")
+    print(f"Mean Square Error: {mse:.6f}")
+    print(f"Peak Signal-to-Noise Ratio: {psnr:.2f} dB")
+    print(f"Waveform Correlation: {correlation:.4f}")
+    
+    

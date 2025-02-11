@@ -69,7 +69,9 @@ class TemporalAudioEncoder:
                 audio_codes=self.last_audio_codes,
                 audio_scales=self.last_audio_scales
             ).audio_values
-        return reconstructed.squeeze()
+
+        print("Reconstructed Shape: ", reconstructed.shape)
+        return reconstructed.squeeze()[0]
     
     def _preprocess_audio(self, audio_path):
         waveform, sample_rate = torchaudio.load(audio_path)
