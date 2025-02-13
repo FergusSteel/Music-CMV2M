@@ -2,48 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class TemporalAlignmentModule(nn.Module):
-    def __init__(self, feature_dim=768, num_heads=8):
-        super().__init__()
-        self.cross_attention = nn.MultiheadAttention(
-            embed_dim=feature_dim,
-            num_heads=num_heads,
-            batch_first=True
-        )
-        
-    def forward(self, video_features, audio_features):
-        aligned_features, attention_weights = self.cross_attention(
-            query=video_features,
-            key=audio_features,
-            value=audio_features
-        )
-        return aligned_features, attention_weights
-    
-class TemporalCrossAlignmentModule(nn.Module):
-    def __init__(self, feature_dim=768, num_heads=8):
-        super().__init__()
-        self.video_to_audio_attention = nn.MultiheadAttention(
-            embed_dim=feature_dim, num_heads=num_heads, batch_first=True
-        )
-        self.audio_to_video_attention = nn.MultiheadAttention(
-            embed_dim=feature_dim, num_heads=num_heads, batch_first=True
-        )
-        self.gate = nn.Linear(2 * feature_dim, feature_dim)
-
-    def forward(self, video_features, audio_features):
-        video_aligned, video_attention = self.video_to_audio_attention(
-            query=video_features, key=audio_features, value=audio_features
-        )
-        
-        audio_aligned, audio_attention = self.audio_to_video_attention(
-            query=audio_features, key=video_features, value=video_features
-        )
-
-        # add em together using a gate so we can decide how much of each to use rather than just concat
-        fused_video = torch.tanh(self.gate(torch.cat([video_features, video_aligned], dim=-1)))
-        fused_audio = torch.tanh(self.gate(torch.cat([audio_features, audio_aligned], dim=-1)))
-
-        return fused_video, fused_audio, video_attention, audio_attention
+import * from feature_encoders
 
 class SharedLatentSpace(nn.Module):
     def __init__(self, feature_dim=768, latent_dim=768):
@@ -52,38 +11,19 @@ class SharedLatentSpace(nn.Module):
         
         self.temporal_alignment = TemporalCrossAlignmentModule().to(self.device)
 
-        # Project the videomae features to latent space man WE NEED TO ADD IN THE OPTICAL FLOW
-        self.video_encoder = nn.Sequential(
-            nn.LayerNorm(feature_dim),
-            nn.Linear(feature_dim, latent_dim),
-            nn.GELU(),
-            nn.Linear(latent_dim, latent_dim)
-        )
+        # REPLACE THESE WITH feature_encoders
 
-        self.optical_flow_encoder = nn.Sequential(
-            nn.Conv2d(2, 64, 3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.GELU(),
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Flatten(),
-            nn.Linear(128, feature_dim)
-        )
+        # Project the videomae features to latent space man WE NEED TO ADD IN THE OPTICAL FLOW
+        self.video_encoder = VideoFeatureEncoder()
+
+        self.optical_flow_encoder = OpticalFlowEncoder()
+
+        # Encodec token encoder
+        self.encodec_encoder = EncodecEncoder()
         
         #Projectin audio to latent space 
-        self.audio_encoder = nn.Sequential(
-            nn.LayerNorm(feature_dim),
-            nn.Linear(feature_dim, latent_dim),
-            nn.GELU(),
-            nn.Linear(latent_dim, latent_dim)
-        )
-        
-        # Encodec token encoder
-        self.token_encoder = nn.Sequential(
-            nn.Linear(2000, latent_dim),  # 4*500 flattened tokens
-            nn.GELU(),
-            nn.Linear(latent_dim, latent_dim)
-        )
+        self.audio_encoder = SpectogramEncoder()
+
         
         # Temperature parameter for contrastive loss
         self.token_embedding = nn.Embedding(2048, latent_dim).to(self.device)
@@ -93,42 +33,30 @@ class SharedLatentSpace(nn.Module):
         self.to(self.device)
     
     def encode_video(self, video_features, optical_flow):
-        flow_features = []
-        for flow in optical_flow:
-            feat = self.optical_flow_encoder(flow)
-            flow_features.append(feat)
-        flow_features = torch.stack(flow_features, dim=1)
-
-        flow_features = F.interpolate(
-            flow_features.transpose(1, 2),
-            size=video_features.size(1),    # Match 1568 timesteps
-            mode='linear'
-        ).transpose(1, 2)
-        
+        flow_features = self.optical_flow_encoder(optical_flow)
         video_latent = self.video_encoder(video_features)
+
+        # May fuse features differently
         combined_features = video_latent + flow_features
         
         return combined_features
     
     def encode_audio(self, audio_features, encodec_features):
         # Encode aligned features
-        mel_latent = self.audio_encoder(audio_features)
-        B, _, C, L = encodec_features.shape
-        token_latent = self.token_embedding(encodec_features.view(-1)).view(B, 1, C, L, -1)
-        token_latent = token_latent.mean(dim=(1,2,3))  # Average across time and channels
-        token_latent = self.token_proj(token_latent)
-        
-        audio_latent = mel_latent + token_latent.unsqueeze(1).expand_as(mel_latent)
+        spectogram_features = self.audio_encoder(audio_features)
+        encodec_features = self.encodec_encoder(encodec_features)
+
+        # this should maybe be a concat job
+        audio_latent = spectogram_features + encodec_features
         
         return audio_latent
     
     def align_modalities(self, video_latent, audio_latent):
         fused_video, fused_audio, video_attention, audio_attention = self.temporal_alignment(video_latent, audio_latent)
-    
-        
+
         return fused_video, fused_audio, video_attention, audio_attention
         
-    def forward(self, features):
+    def encode(self, features):
         # Encode both modalities onto latent space and align em
         video_latent = self.encode_video(
             features["video_features"],
@@ -185,6 +113,32 @@ def train_step(model, features, optimizer):
         "temporal_loss": loss["temporal_loss"]
     }    
 
+class TemporalCrossAlignmentModule(nn.Module):
+    def __init__(self, feature_dim=768, num_heads=8):
+        super().__init__()
+        self.video_to_audio_attention = nn.MultiheadAttention(
+            embed_dim=feature_dim, num_heads=num_heads, batch_first=True
+        )
+        self.audio_to_video_attention = nn.MultiheadAttention(
+            embed_dim=feature_dim, num_heads=num_heads, batch_first=True
+        )
+        self.gate = nn.Linear(2 * feature_dim, feature_dim)
+
+    def forward(self, video_features, audio_features):
+        video_aligned, video_attention = self.video_to_audio_attention(
+            query=video_features, key=audio_features, value=audio_features
+        )
+
+        audio_aligned, audio_attention = self.audio_to_video_attention(
+            query=audio_features, key=video_features, value=video_features
+        )
+
+        # add em together using a gate so we can decide how much of each to use rather than just concat
+        fused_video = torch.tanh(self.gate(torch.cat([video_features, video_aligned], dim=-1)))
+        fused_audio = torch.tanh(self.gate(torch.cat([audio_features, audio_aligned], dim=-1)))
+
+        return fused_video, fused_audio, video_attention, audio_attention
+
 
 if __name__ == "__main__":
     from feature_extraction import MultiModalFeatureExtractor
@@ -206,7 +160,7 @@ if __name__ == "__main__":
             features[k] = v.to(model.device)
 
     with torch.no_grad():
-        outputs = model(features)
+        outputs = model.encode(features)
         print("Output Shapes:", {k: v.shape for k, v in outputs.items()})
         loss = model.compute_total_loss(outputs)
         print("Untrained total loss: ", loss["loss"])

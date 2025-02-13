@@ -45,14 +45,14 @@ def extract_audio(video_path, audio_output_path):
     """
     subprocess.run([
         "ffmpeg", "-i", video_path, "-vn",  # -vn ensures no video in output
-        "-ac", "2", "-ar", "44100", "-b:a", "192k",  # Stereo, 44.1 kHz, 192 kbps
+        "-ac", "2", "-ar", "32000", "-b:a", "192k",  # Stereo, 44.1 kHz, 192 kbps
         audio_output_path
     ], check=True)
 
 if __name__ == "__main__":
     # Paths for testing
-    input_dir = "test_dat"  # Folder with test videos
+    input_dir = "testda"  # Folder with test videos
     output_video_dir = "test_dat/videos"
     output_audio_dir = "test_dat/audios"
-
+#
     videos_to_cross_modal(input_dir, output_video_dir, output_audio_dir)

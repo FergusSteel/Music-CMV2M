@@ -49,15 +49,14 @@ class TemporalAudioEncoder:
             mel_features = mel_features.unsqueeze(0)
             
         self.original_time_dim = mel_features.size(2)
-        
-        aligned_features = self._align_temporal_dimension(mel_features)
-        projected_features = self.projection(aligned_features)
+
+#         aligned_features = self._align_temporal_dimension(mel_features)
+#         projected_features = self.projection(aligned_features)
 
         return {
             "encodec_features": self.last_audio_codes,
             "audio_scales": self.last_audio_scales,
             "mel_features": mel_features,
-            "aligned_features": projected_features,
             "original_length": original_length,
             "padding_mask": inputs.get("padding_mask", None)
         }
@@ -87,7 +86,7 @@ class TemporalAudioEncoder:
         
         return waveform.squeeze(0)
     
-    def _align_temporal_dimension(self, features):
+    def _align_temporal_dimension(self, features): # we should do this alter
         features = features.permute(0, 2, 1)  # [batch, time, mels]
         
         features = F.interpolate(

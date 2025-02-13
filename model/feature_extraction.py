@@ -20,7 +20,7 @@ class MultiModalFeatureExtractor(nn.Module):
         optical_flow = video_outputs["optical_flow"].to(self.device) if extract_optical_flow else None
         
         audio_outputs = self.audio_extractor.extract_features(audio_path)
-        audio_features = audio_outputs["aligned_features"].to(self.device)
+        audio_spectograms = audio_outputs["mel_features"].to(self.device)
         encodec_features = audio_outputs["encodec_features"].to(self.device)
         audio_scales = audio_outputs["audio_scales"].to(self.device)
         
@@ -31,13 +31,12 @@ class MultiModalFeatureExtractor(nn.Module):
             
         return {
             "video_features": video_features,
-            "audio_features": audio_features,
+            "audio_spectograms": audio_spectograms,
             "optical_flow": optical_flow,
             "encodec_features": encodec_features,
             "audio_scale": audio_scales,
             "additional_info": {
                 "padding_mask": audio_outputs["padding_mask"],
-                "original_mel": audio_outputs["mel_features"],
                 "original_length": audio_outputs["original_length"]
             }
         }

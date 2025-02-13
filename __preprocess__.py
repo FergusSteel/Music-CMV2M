@@ -19,6 +19,9 @@ def preprocess_instrument_folders(data_dir, output_video_dir, output_audio_dir, 
     os.makedirs(output_audio_dir, exist_ok=True)
 
     for instrument in os.listdir(data_dir):
+        if instrument not in ["Cello", "DoubleBass", "Violin", "Viola"]:
+            continue
+
         instrument_path = os.path.join(data_dir, instrument)
         if os.path.isdir(instrument_path):
             print(f"Processing instrument: {instrument}")
@@ -119,7 +122,7 @@ def process_video(video_path, output_dir, segment_duration):
         segment_duration (int): Duration of each segment in seconds.
     """
     cap = cv2.VideoCapture(video_path)
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    fps = 16
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / fps
 
@@ -149,7 +152,7 @@ def save_video_segment(cap, start_frame, end_frame, fps, output_path):
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     width, height = 224, 224  # Target resolution
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(output_path, fourcc, 16, (width, height))
 
     for _ in range(int(end_frame - start_frame)):
         ret, frame = cap.read()
@@ -170,7 +173,7 @@ def process_audio(audio_path, output_dir, segment_duration):
         output_dir (str): Directory to save audio segments.
         segment_duration (int): Duration of each segment in seconds.
     """
-    audio, sr = librosa.load(audio_path, sr=None)
+    audio, sr = librosa.load(audio_path, sr=32000)
     total_samples = len(audio)
     duration = total_samples / sr
 
@@ -184,8 +187,8 @@ def process_audio(audio_path, output_dir, segment_duration):
         sf.write(segment_path, audio[int(segment_start):int(segment_end)], sr)
 
 if __name__ == "__main__":
-    data_dir = "solos/data"
-    output_video_dir = "solos/processed_videos"
-    output_audio_dir = "solos/processed_audios"
+    data_dir = "data"
+    output_video_dir = "dat/processed_videos"
+    output_audio_dir = "dat/processed_audios"
 
     preprocess_instrument_folders(data_dir, output_video_dir, output_audio_dir)
