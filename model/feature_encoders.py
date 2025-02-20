@@ -192,17 +192,31 @@ def train_encoder(encoder, decoder, train_loader, val_loader, num_epochs=100):
             }, f'best_model_{type(encoder).__name__}.pt')
 
 if __name__ == "__main__":
-    
-    # For Optical Flow
-    flow_encoder = OpticalFlowEncoder()
-    flow_decoder = OpticalFlowDecoder()
-    # train_encoder(flow_encoder, flow_decoder, flow_train_loader, flow_val_loader)
-    
-    # For Encodec
-    encodec_encoder = EncodecEncoder()
-    encodec_decoder = EncodecDecoder()
-    # train_encoder(encodec_encoder, encodec_decoder, encodec_train_loader, encodec_val_loader)
-    
-    # For Spectrogram
-    spec_encoder = SpectrogramEncoder()
-    spec_decoder = SpectrogramDecoder()
+    from dataloader import create_data_loaders
+    from feature_extraction import MultiModalFeatureExtractor
+
+    dat_directory = "../dat"
+    tl, vl = create_data_loaders(dat_directory)
+
+#     features = extractor.extract_features(video_path, audio_path)
+#
+#         for k, v in features.items():
+#             if isinstance(v, torch.Tensor):
+#                 features[k] = v.to(model.device)
+
+    for batch in tl:
+        print(batch)
+
+#     # For Optical Flow
+#     flow_encoder = OpticalFlowEncoder()
+#     flow_decoder = OpticalFlowDecoder()
+#     # train_encoder(flow_encoder, flow_decoder, flow_train_loader, flow_val_loader)
+#
+#     # For Encodec
+#     encodec_encoder = EncodecEncoder()
+#     encodec_decoder = EncodecDecoder()
+#     # train_encoder(encodec_encoder, encodec_decoder, encodec_train_loader, encodec_val_loader)
+#
+#     # For Spectrogram
+#     spec_encoder = SpectrogramEncoder()
+#     spec_decoder = SpectrogramDecoder()
