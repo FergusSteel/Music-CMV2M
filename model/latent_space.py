@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import * from feature_encoders
+from feature_encoders import VideoFeatureEncoder, OpticalFlowEncoder, EncodecEncoder,SpectogramEncoder
 
 class SharedLatentSpace(nn.Module):
     def __init__(self, feature_dim=768, latent_dim=768):
@@ -57,13 +57,18 @@ class SharedLatentSpace(nn.Module):
         return fused_video, fused_audio, video_attention, audio_attention
         
     def encode(self, features):
-        # Encode both modalities onto latent space and align em
+            # Encode both modalities onto latent space and align em
+        print("Video Features Shape: ", features["video_features"].shape)
+        print("Audio Features Shape: ", features["audio_spectograms"].shape)
+        print("Optical Flow Shape: ", features["optical_flow"].shape)
+        print("Encodec Features Shape: ", features["encodec_features"].shape)
+
         video_latent = self.encode_video(
             features["video_features"],
             features["optical_flow"])
         
         audio_latent = self.encode_audio(
-            features["audio_features"],
+            features["audio_spectograms"],
             features["encodec_features"]
         )
 

@@ -26,8 +26,6 @@ class MultiModalFeatureExtractor(nn.Module):
         
         if video_features.dim() == 2:
             video_features = video_features.unsqueeze(0)
-        if audio_features.dim() == 2:
-            audio_features = audio_features.unsqueeze(0)
             
         return {
             "video_features": video_features,
