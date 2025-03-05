@@ -50,9 +50,9 @@ def create_test_dataset(source_dir, dest_dir, instrument="Violin", num_samples=2
 
 # if __name__ == "__main__":
 #     # Set paths
-#     source_dir = "../Solos/"  # Your source data directory
+#     source_dir = "../dat/"
 #     test_dir = "../test_data"  # Where to put the test dataset
-    
+#
 #     # Create test dataset
 #     num_pairs = create_test_dataset(
 #         source_dir=source_dir,
@@ -63,7 +63,7 @@ def create_test_dataset(source_dir, dest_dir, instrument="Violin", num_samples=2
 
 import torch
 from feature_extraction import MultiModalFeatureExtractor
-from feature_encoders import (VideoFeatureEncoder, OpticalFlowEncoder, 
+from feature_encoders import (VideoFeatureEncoder, OpticalFlowEncoder,
                             EncodecEncoder, SpectrogramEncoder,
                             OpticalFlowDecoder, EncodecDecoder, SpectrogramDecoder, EncoderTrainer)
 from dataloader import (FeatureExtractionDataset, extract_and_save_features, create_training_loaders)
@@ -86,34 +86,30 @@ def test_feature_extraction():
 def test_encoder_training(modality, encoder, decoder, batch_size=4):
     """Test training for a specific encoder"""
     print(f"\n=== Testing {modality} Encoder Training ===")
-    
+
     # Create data loaders
-    train_loader, val_loader = create_training_loaders(
-        feature_dir=f"..\\test_features\\{modality}",
-        modality=modality,
-        batch_size=batch_size
-    )
-    
+
+
     # Get a sample batch to check shapes
     for batch in train_loader:
         print(f"Sample batch shape: {batch.shape}")
         break
-    
+
     # Test one epoch of training
     print("\nTesting one training epoch...")
     trainer = EncoderTrainer(encoder, decoder)
-    
+
     epoch_loss = 0
     num_batches = 0
-    
+
     for batch in train_loader:
         loss = trainer.train_step(batch)
         epoch_loss += loss
         num_batches += 1
         print(f"Batch {num_batches} Loss: {loss:.4f}")
-    
+
     print(f"Average Training Loss: {epoch_loss/num_batches:.4f}")
-    
+
     # Test validation
     print("\nTesting validation...")
     val_loss = trainer.validate(val_loader)
@@ -121,20 +117,20 @@ def test_encoder_training(modality, encoder, decoder, batch_size=4):
 
 def main():
     print("Starting pipeline test with test_data...")
-    
+
     # First extract and cache features
-    # test_feature_extraction()
-    
+    test_feature_extraction()
+
     # Test Optical Flow encoder
     flow_encoder = OpticalFlowEncoder()
     flow_decoder = OpticalFlowDecoder()
     test_encoder_training("optical_flow", flow_encoder, flow_decoder)
-    
+
     # Test Encodec encoder
     encodec_encoder = EncodecEncoder()
     encodec_decoder = EncodecDecoder()
     test_encoder_training("encodec", encodec_encoder, encodec_decoder)
-    
+
     # Test Spectrogram encoder
     spec_encoder = SpectrogramEncoder()
     spec_decoder = SpectrogramDecoder()

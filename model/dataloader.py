@@ -56,7 +56,7 @@ class FeatureExtractionDataset(Dataset):
             # Create separate directories for each modality
             self.modality_dirs = {
                 'video_features': os.path.join(feature_cache_dir, 'video'),
-                'audio_spectograms': os.path.join(feature_cache_dir, 'spectogram'),
+                'spectogram': os.path.join(feature_cache_dir, 'spectogram'),
                 'optical_flow': os.path.join(feature_cache_dir, 'optical_flow'),
                 'encodec_features': os.path.join(feature_cache_dir, 'encodec')
             }
@@ -133,19 +133,21 @@ def create_modal_specific_datasets(feature_dataset, batch_size=8):
     # Create datasets for each modality
     video_features = [item["video_features"] for item in full_data]
     optical_flow = [item["optical_flow"] for item in full_data]
-    audio_spectograms = [item["audio_spectograms"] for item in full_data]
+    spectogram = [item["spectogram"] for item in full_data]
     encodec_features = [item["encodec_features"] for item in full_data]
+
+    print("length spector", len(spectogram))
     
     # Create data loaders
     video_loader = DataLoader(video_features, batch_size=batch_size, shuffle=True)
     flow_loader = DataLoader(optical_flow, batch_size=batch_size, shuffle=True)
-    spectogram_loader = DataLoader(audio_spectograms, batch_size=batch_size, shuffle=True)
+    spectogram_loader = DataLoader(spectogram, batch_size=batch_size, shuffle=True)
     encodec_loader = DataLoader(encodec_features, batch_size=batch_size, shuffle=True)
     
     return {
         "video": (video_loader, DataLoader(video_features, batch_size=batch_size, shuffle=False)),
         "optical_flow": (flow_loader, DataLoader(optical_flow, batch_size=batch_size, shuffle=False)),
-        "spectogram": (spectogram_loader, DataLoader(audio_spectograms, batch_size=batch_size, shuffle=False)),
+        "spectogram": (spectogram_loader, DataLoader(spectogram, batch_size=batch_size, shuffle=False)),
         "encodec": (encodec_loader, DataLoader(encodec_features, batch_size=batch_size, shuffle=False))
     }
 
@@ -165,6 +167,7 @@ def extract_and_save_features(data_dir, instrument_type, feature_extractor, outp
     print(f"Extracted features for {len(dataset)} pairs")
 
 def create_training_loaders(feature_dir, modality, batch_size=8, train_split=0.8):
+    print("Feature dir", feature_dir)
     feature_files = sorted(glob.glob(os.path.join(feature_dir, "*.pt")))
     
     modality_data = []
