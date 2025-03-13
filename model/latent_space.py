@@ -24,12 +24,7 @@ class SharedLatentSpace(nn.Module):
         #Projectin audio to latent space 
         self.audio_encoder = SpectogramEncoder()
 
-        
-        # Temperature parameter for contrastive loss
-        self.token_embedding = nn.Embedding(2048, latent_dim).to(self.device)
-        self.token_proj = nn.Linear(latent_dim, latent_dim).to(self.device)
-        self.temperature = nn.Parameter(torch.ones([]) * 0.07)
-        
+
         self.to(self.device)
     
     def encode_video(self, video_features, optical_flow):
@@ -56,7 +51,7 @@ class SharedLatentSpace(nn.Module):
 
         return fused_video, fused_audio, video_attention, audio_attention
         
-    def encode(self, features):
+    def encode(self, features, align_modalities=False):
             # Encode both modalities onto latent space and align em
         print("Video Features Shape: ", features["video_features"].shape)
         print("Audio Features Shape: ", features["audio_spectograms"].shape)
@@ -72,38 +67,26 @@ class SharedLatentSpace(nn.Module):
             features["encodec_features"]
         )
 
-        fused_video, fused_audio, video_attention, audio_attention = self.align_modalities(video_latent, audio_latent)
-        
-        return {
-            "video_embedding": fused_video,     
-            "audio_embedding": fused_audio,      
-            "video_attention_map": video_attention,
-            "audio_attention_map": audio_attention,          
-            "video_latent": video_latent,       
-            "audio_latent": audio_latent       
-        }
-    
-    def compute_total_loss(self, outputs):
-        video_normalised = F.normalize(outputs["video_embedding"])
-        audio_normalised = F.normalize(outputs["audio_embedding"])
+        if align_modalities:
+            fused_video, fused_audio, video_attention, audio_attention = self.align_modalities(video_latent, audio_latent)
 
-        sim = torch.matmul(video_normalised.squeeze(), audio_normalised.squeeze().T) / self.temperature
-        labels = torch.arange(sim.size(0), device=self.device)
-        contrastive_loss = F.cross_entropy(sim, labels)
-        
-        video_attention = outputs["video_attention_map"]
-        audio_attention = outputs["audio_attention_map"]
-
-        # IDK how to compute this - basically we want to measure "how much" the modalities' features attend to another (well aligned reprs will attend more (non-diagonal non-normal))
-        # temporal_loss = 
-        temporal_loss = 0
-
-
-        return {
-            "loss": contrastive_loss + temporal_loss,
-            "contrastive_loss": contrastive_loss,
-            "temporal_loss": temporal_loss
-        }
+            return {
+                "video_embedding": fused_video,
+                "audio_embedding": fused_audio,
+                "video_attention_map": video_attention,
+                "audio_attention_map": audio_attention,
+                "video_latent": video_latent,
+                "audio_latent": audio_latent
+            }
+          else:
+            return {
+                "video_embedding": video_latent,
+                "audio_embedding": audio_latent,
+                "video_attention_map": None,
+                "audio_attention_map": None,
+                "video_latent": video_latent,
+                "audio_latent": audio_latent
+            }
 
 def train_step(model, features, optimizer):
     outputs = model(features)
